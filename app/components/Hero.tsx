@@ -1,0 +1,30 @@
+import Link from "next/link";
+
+export default function Hero({ onStart }: { onStart: () => void }) {
+    return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
+            <h1 className="text-5xl md:text-7xl font-bold tracking-tighter text-white mb-6">
+                CareerPath AI
+            </h1>
+            <p className="text-xl md:text-2xl text-gray-400 max-w-2xl mb-12">
+                Expert career guidance for Kerala students. Decode your future with AI.
+            </p>
+
+            <button
+                onClick={onStart}
+                className="group relative inline-flex h-12 items-center justify-center overflow-hidden rounded-full bg-white px-8 font-medium text-black transition-all duration-300 hover:bg-gray-200 hover:w-56 w-48"
+            >
+                <span className="mr-2">Start Chatting</span>
+                <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-300">→</span>
+            </button>
+
+            <div className="mt-16 flex gap-8 text-sm text-gray-600">
+                <div>Based on VHSE SparkHub</div>
+                <div>·</div>
+                <div>Localized for Kerala</div>
+                <div>·</div>
+                <div>Free & Open</div>
+            </div>
+        </div>
+    );
+}
