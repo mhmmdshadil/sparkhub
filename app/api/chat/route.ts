@@ -1,21 +1,41 @@
 import { NextResponse } from 'next/server';
 import { AzureOpenAI } from 'openai';
+import { cosmosContainer } from '@/lib/cosmos';
+import { currentUser } from '@clerk/nextjs/server';
 
 export async function POST(req: Request) {
     try {
+        const user = await currentUser();
+        if (!user) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const { messages } = await req.json();
+        const userId = user.id;
+
+        // Save the latest user message to Cosmos
+        const latestUserMsg = messages[messages.length - 1];
+        if (latestUserMsg && latestUserMsg.role === 'user' && cosmosContainer) {
+            await cosmosContainer.items.create({
+                userId,
+                role: 'user',
+                content: latestUserMsg.content,
+                createdAt: new Date().toISOString()
+            }); // Let Cosmos generate ID
+        }
 
         const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
         const apiKey = process.env.AZURE_OPENAI_API_KEY;
         const deployment = "gpt-35-turbo";
+
+        let responseText = "";
 
         // Graceful fallback if keys aren't set (Simulation Mode)
         if (!endpoint || !apiKey) {
             console.warn("Missing Azure credentials. Returning simulated response.");
             await new Promise(resolve => setTimeout(resolve, 1500)); // Thinking time
 
-            const lastUserMessage = messages[messages.length - 1].content.toLowerCase();
-            let responseText = "";
+            const lastUserMessage = latestUserMsg?.content.toLowerCase() || "";
 
             // Advanced "Simulation" Logic to mimic AI behavior without keys
             if (messages.length <= 2) {
@@ -39,62 +59,72 @@ export async function POST(req: Request) {
                 responseText = `That's interesting regarding "${lastUserMessage}". \n\nSince I'm currently in **Offline Demo Mode**, I can only answer specifically about *Science, Commerce, Arts, or specific career paths*. \n\n*Please add Azure Keys to unlock my full conversational brain!*`;
             }
 
-            return NextResponse.json({
-                message: responseText
-            });
-        }
+        } else {
+            // Azure Logic
+            // Check for Search keys (Optional but recommended for RAG)
+            const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
+            const searchKey = process.env.AZURE_SEARCH_KEY;
+            const searchIndex = "career-paths"; // Default index name
 
-        // Check for Search keys (Optional but recommended for RAG)
-        const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
-        const searchKey = process.env.AZURE_SEARCH_KEY;
-        const searchIndex = "career-paths"; // Default index name
+            const client = new AzureOpenAI({ endpoint, apiKey, deployment, apiVersion: "2024-05-01-preview" });
 
-        const client = new AzureOpenAI({ endpoint, apiKey, deployment, apiVersion: "2024-05-01-preview" });
+            // "Gemini-Class" System Prompt
+            const systemPrompt = `You are Sparkbot, an advanced, friendly, and highly intelligent AI assistant by SparkHub. 
+        
+            Guidelines:
+            1. **Identity**: You are helpful, kind, and smart. You are Sparkbot.
+            2. **Capabilities**: You can answer ANY question (coding, math, history, general knowledge).
+            3. **RAG/Data**: If you have access to retrieved documents (from Azure Search), USE them to answer specific questions about colleges, courses, or SparkHub data.
+            4. **Aptitude Focus**: While you are a general assistant, you should gently steer the conversation towards career guidance if the user seems unsure about their future.
+            5. **Tone**: Professional yet approachable. Use Emoji sparingly.
+            6. **Formatting**: Use Markdown freely. Use **bold** for emphasis, *italics* for nuance, and \`code blocks\` for technical content.
+            
+            Current Goal: Assess the user's aptitude and interests to recommend a career path, but answer all their side questions fully first.`;
 
-        // "Gemini-Class" System Prompt
-        const systemPrompt = `You are Sparkbot, an advanced, friendly, and highly intelligent AI assistant by SparkHub. 
-    
-    Guidelines:
-    1. **Identity**: You are helpful, kind, and smart. You are Sparkbot.
-    2. **Capabilities**: You can answer ANY question (coding, math, history, general knowledge).
-    3. **RAG/Data**: If you have access to retrieved documents (from Azure Search), USE them to answer specific questions about colleges, courses, or SparkHub data.
-    4. **Aptitude Focus**: While you are a general assistant, you should gently steer the conversation towards career guidance if the user seems unsure about their future.
-    5. **Tone**: Professional yet approachable. Use Emoji sparingly.
-    6. **Formatting**: Use Markdown freely. Use **bold** for emphasis, *italics* for nuance, and \`code blocks\` for technical content.
-    
-    Current Goal: Assess the user's aptitude and interests to recommend a career path, but answer all their side questions fully first.`;
-
-        // Configure Data Sources (RAG) if keys are present
-        const extraBody: any = {};
-        if (searchEndpoint && searchKey) {
-            extraBody.data_sources = [
-                {
-                    type: "azure_search",
-                    parameters: {
-                        endpoint: searchEndpoint,
-                        index_name: searchIndex,
-                        authentication: {
-                            type: "api_key",
-                            key: searchKey,
+            // Configure Data Sources (RAG) if keys are present
+            const extraBody: any = {};
+            if (searchEndpoint && searchKey) {
+                extraBody.data_sources = [
+                    {
+                        type: "azure_search",
+                        parameters: {
+                            endpoint: searchEndpoint,
+                            index_name: searchIndex,
+                            authentication: {
+                                type: "api_key",
+                                key: searchKey,
+                            },
                         },
                     },
-                },
-            ];
+                ];
+            }
+
+            const completion = await client.chat.completions.create({
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...messages
+                ],
+                model: deployment,
+                ...extraBody, // Inject RAG configuration
+            });
+
+            responseText = completion.choices[0].message.content || "No response generated.";
         }
 
-        const completion = await client.chat.completions.create({
-            messages: [
-                { role: "system", content: systemPrompt },
-                ...messages
-            ],
-            model: deployment,
-            ...extraBody, // Inject RAG configuration
-        });
+        // Save AI response to Cosmos
+        if (cosmosContainer) {
+            await cosmosContainer.items.create({
+                userId,
+                role: 'assistant',
+                content: responseText,
+                createdAt: new Date().toISOString()
+            }).catch(e => console.error("Failed to save AI response to DB", e));
+        }
 
-        return NextResponse.json({ message: completion.choices[0].message.content });
+        return NextResponse.json({ message: responseText });
 
     } catch (error: any) {
-        console.error("Azure OpenAI Error:", error);
+        console.error("Chat Error:", error);
         return NextResponse.json({ error: "Failed to generate response." }, { status: 500 });
     }
 }
